@@ -1,0 +1,18 @@
+packages:
+  "recharts": "Growth tracker and percentile charts"
+  "date-fns": "Formatting dates in reminders and community feed"
+  "framer-motion": "Smooth page transitions and component animations"
+  "react-hook-form": "Form state management"
+  "@hookform/resolvers": "Zod validation for forms"
+
+images:
+  - path: "artifacts/babycare/public/images/nursery-bg.png"
+    description: "Soft pastel background with abstract warm nursery elements, very gentle, subtle bokeh, baby blue and light pink"
+    aspect_ratio: "16:9"
+  - path: "artifacts/babycare/public/images/baby-hero.png"
+    description: "Cute abstract illustration of a baby face or soft toys in pastel pinks and blues, modern flat vector style on transparent background"
+    aspect_ratio: "1:1"
+
+notes:
+  - Using @workspace/api-client-react for all API calls
+  - Using standard shadcn components from src/components/ui/

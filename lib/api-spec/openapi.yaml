@@ -1,15 +1,28 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: BabyCare AI Assistant API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: cry
+    description: Baby cry analysis
+  - name: photo
+    description: Photo analysis
+  - name: diagnosis
+    description: Symptom diagnosis
+  - name: growth
+    description: Growth tracking
+  - name: reminders
+    description: Reminder management
+  - name: emergency
+    description: Emergency assistant
+  - name: community
+    description: Mothers community
 paths:
   /healthz:
     get:
@@ -24,6 +37,424 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /analyze-cry:
+    post:
+      operationId: analyzeCry
+      tags: [cry]
+      summary: Analyze baby cry audio
+      description: Accepts audio file and returns cry analysis
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Cry analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CryAnalysisResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /analyze-photo:
+    post:
+      operationId: analyzePhoto
+      tags: [photo]
+      summary: Analyze baby photo
+      description: Accepts image and returns condition analysis
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+                analysis_type:
+                  type: string
+                  enum: [rash, stool, jaundice, general]
+      responses:
+        "200":
+          description: Photo analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhotoAnalysisResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /diagnose:
+    post:
+      operationId: diagnose
+      tags: [diagnosis]
+      summary: Symptom-based diagnosis
+      description: Returns medical advice based on symptoms
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiagnosisRequest"
+      responses:
+        "200":
+          description: Diagnosis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /growth/add:
+    post:
+      operationId: addGrowthRecord
+      tags: [growth]
+      summary: Add growth record
+      description: Save a new growth measurement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrowthRecordInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrowthRecord"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /growth/history:
+    get:
+      operationId: getGrowthHistory
+      tags: [growth]
+      summary: Get growth history
+      description: Returns all growth records for a baby
+      parameters:
+        - name: baby_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Growth history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GrowthRecord"
+
+  /growth/percentile:
+    get:
+      operationId: getGrowthPercentile
+      tags: [growth]
+      summary: Calculate growth percentile
+      description: Returns WHO-standard percentile for given measurements
+      parameters:
+        - name: age_months
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: weight_kg
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: height_cm
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: gender
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [male, female]
+      responses:
+        "200":
+          description: Percentile calculation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PercentileResult"
+
+  /reminder/create:
+    post:
+      operationId: createReminder
+      tags: [reminders]
+      summary: Create reminder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReminderInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reminder"
+
+  /reminder/list:
+    get:
+      operationId: listReminders
+      tags: [reminders]
+      summary: List reminders
+      responses:
+        "200":
+          description: List of reminders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Reminder"
+
+  /reminder/{id}:
+    delete:
+      operationId: deleteReminder
+      tags: [reminders]
+      summary: Delete reminder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateReminder
+      tags: [reminders]
+      summary: Update reminder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                completed:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reminder"
+
+  /emergency/assess:
+    post:
+      operationId: assessEmergency
+      tags: [emergency]
+      summary: Emergency triage assessment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmergencyRequest"
+      responses:
+        "200":
+          description: Emergency assessment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyResult"
+
+  /emergency/hospitals:
+    get:
+      operationId: getNearbyHospitals
+      tags: [emergency]
+      summary: Find nearby hospitals
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: lng
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: List of hospitals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Hospital"
+
+  /community/post:
+    post:
+      operationId: createPost
+      tags: [community]
+      summary: Create community post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+
+  /community/feed:
+    get:
+      operationId: getCommunityFeed
+      tags: [community]
+      summary: Get community feed
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Community feed
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Post"
+
+  /community/like:
+    post:
+      operationId: likePost
+      tags: [community]
+      summary: Like or unlike a post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [post_id]
+              properties:
+                post_id:
+                  type: integer
+      responses:
+        "200":
+          description: Like status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /community/comment:
+    post:
+      operationId: addComment
+      tags: [community]
+      summary: Add comment to post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentInput"
+      responses:
+        "201":
+          description: Comment added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+
+  /community/comments/{post_id}:
+    get:
+      operationId: getPostComments
+      tags: [community]
+      summary: Get comments for a post
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Comments list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Comment"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +465,397 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - message
+
+    CryAnalysisResult:
+      type: object
+      properties:
+        classification:
+          type: string
+          enum: [hunger, colic, tired, discomfort, pain, unknown]
+        confidence:
+          type: number
+        description:
+          type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        features:
+          $ref: "#/components/schemas/AudioFeatures"
+        pitch_contour:
+          type: array
+          items:
+            type: number
+      required:
+        - classification
+        - confidence
+        - description
+        - recommendations
+
+    AudioFeatures:
+      type: object
+      properties:
+        mean_pitch:
+          type: number
+        spectral_centroid:
+          type: number
+        rms_energy:
+          type: number
+        zero_crossing_rate:
+          type: number
+        mfcc_mean:
+          type: array
+          items:
+            type: number
+      required:
+        - mean_pitch
+        - spectral_centroid
+        - rms_energy
+        - zero_crossing_rate
+
+    PhotoAnalysisResult:
+      type: object
+      properties:
+        condition:
+          type: string
+        severity:
+          type: string
+          enum: [normal, mild, moderate, severe]
+        description:
+          type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        see_doctor:
+          type: boolean
+        color_analysis:
+          type: object
+          properties:
+            dominant_color:
+              type: string
+            yellow_percentage:
+              type: number
+            red_percentage:
+              type: number
+      required:
+        - condition
+        - severity
+        - description
+        - recommendations
+        - see_doctor
+
+    DiagnosisRequest:
+      type: object
+      required: [age_months, symptoms]
+      properties:
+        age_months:
+          type: number
+        weight_kg:
+          type: ["number", "null"]
+        symptoms:
+          type: array
+          items:
+            type: string
+        temperature:
+          type: ["number", "null"]
+        duration_hours:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+
+    DiagnosisResult:
+      type: object
+      properties:
+        severity:
+          type: string
+          enum: [green, yellow, orange, red]
+        severity_label:
+          type: string
+        advice:
+          type: string
+        home_care:
+          type: array
+          items:
+            type: string
+        when_to_see_doctor:
+          type: string
+        emergency_signs:
+          type: array
+          items:
+            type: string
+        disclaimer:
+          type: string
+      required:
+        - severity
+        - severity_label
+        - advice
+        - home_care
+        - when_to_see_doctor
+        - disclaimer
+
+    GrowthRecordInput:
+      type: object
+      required: [baby_name, age_months, gender, weight_kg]
+      properties:
+        baby_name:
+          type: string
+        age_months:
+          type: number
+        gender:
+          type: string
+          enum: [male, female]
+        weight_kg:
+          type: ["number", "null"]
+        height_cm:
+          type: ["number", "null"]
+        head_circumference_cm:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+
+    GrowthRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        baby_name:
+          type: string
+        age_months:
+          type: number
+        gender:
+          type: string
+        weight_kg:
+          type: ["number", "null"]
+        height_cm:
+          type: ["number", "null"]
+        head_circumference_cm:
+          type: ["number", "null"]
+        weight_percentile:
+          type: ["number", "null"]
+        height_percentile:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        recorded_at:
+          type: string
+      required:
+        - id
+        - baby_name
+        - age_months
+        - gender
+        - recorded_at
+
+    PercentileResult:
+      type: object
+      properties:
+        weight_percentile:
+          type: ["number", "null"]
+        height_percentile:
+          type: ["number", "null"]
+        weight_zscore:
+          type: ["number", "null"]
+        height_zscore:
+          type: ["number", "null"]
+        interpretation:
+          type: string
+      required:
+        - interpretation
+
+    ReminderInput:
+      type: object
+      required: [title, type, due_at]
+      properties:
+        title:
+          type: string
+        type:
+          type: string
+          enum: [feeding, sleep, vaccine, appointment, medication, other]
+        due_at:
+          type: string
+        notes:
+          type: ["string", "null"]
+        recurring:
+          type: ["string", "null"]
+
+    Reminder:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        type:
+          type: string
+        due_at:
+          type: string
+        notes:
+          type: ["string", "null"]
+        completed:
+          type: boolean
+        recurring:
+          type: ["string", "null"]
+        created_at:
+          type: string
+      required:
+        - id
+        - title
+        - type
+        - due_at
+        - completed
+        - created_at
+
+    EmergencyRequest:
+      type: object
+      required: [age_months, symptoms]
+      properties:
+        age_months:
+          type: number
+        symptoms:
+          type: array
+          items:
+            type: string
+        temperature:
+          type: ["number", "null"]
+        is_breathing:
+          type: ["boolean", "null"]
+        is_conscious:
+          type: ["boolean", "null"]
+
+    EmergencyResult:
+      type: object
+      properties:
+        level:
+          type: string
+          enum: [call_911, urgent_er, see_doctor_today, monitor_at_home]
+        message:
+          type: string
+        immediate_actions:
+          type: array
+          items:
+            type: string
+        cpr_needed:
+          type: boolean
+        call_number:
+          type: ["string", "null"]
+      required:
+        - level
+        - message
+        - immediate_actions
+        - cpr_needed
+
+    Hospital:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        distance_km:
+          type: number
+        phone:
+          type: ["string", "null"]
+        lat:
+          type: number
+        lng:
+          type: number
+      required:
+        - name
+        - address
+        - distance_km
+        - lat
+        - lng
+
+    PostInput:
+      type: object
+      required: [author_name, content, category]
+      properties:
+        author_name:
+          type: string
+        content:
+          type: string
+        category:
+          type: string
+          enum: [general, feeding, sleep, health, development, emotional_support, milestones]
+        title:
+          type: ["string", "null"]
+
+    Post:
+      type: object
+      properties:
+        id:
+          type: integer
+        author_name:
+          type: string
+        title:
+          type: ["string", "null"]
+        content:
+          type: string
+        category:
+          type: string
+        likes:
+          type: integer
+        comment_count:
+          type: integer
+        is_verified:
+          type: boolean
+        created_at:
+          type: string
+      required:
+        - id
+        - author_name
+        - content
+        - category
+        - likes
+        - comment_count
+        - is_verified
+        - created_at
+
+    CommentInput:
+      type: object
+      required: [post_id, author_name, content]
+      properties:
+        post_id:
+          type: integer
+        author_name:
+          type: string
+        content:
+          type: string
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+        post_id:
+          type: integer
+        author_name:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+      required:
+        - id
+        - post_id
+        - author_name
+        - content
+        - created_at
