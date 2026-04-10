@@ -37,6 +37,16 @@ export default function Community() {
     } 
   });
 
+  const posts = Array.isArray(feedQuery.data)
+    ? feedQuery.data
+    : Array.isArray((feedQuery.data as any)?.data)
+    ? (feedQuery.data as any).data
+    : [];
+
+  if (feedQuery.data && !Array.isArray(feedQuery.data) && !Array.isArray((feedQuery.data as any)?.data)) {
+    console.warn("Unexpected community feed shape:", feedQuery.data);
+  }
+
   const { register: registerPost, handleSubmit: handlePostSubmit, reset: resetPost } = useForm<z.infer<typeof postSchema>>({
     resolver: zodResolver(postSchema),
     defaultValues: { category: "general" }
@@ -90,14 +100,14 @@ export default function Community() {
         <div className="md:col-span-8 space-y-6">
           {feedQuery.isLoading && <div className="text-center py-10"><div className="w-8 h-8 border-4 border-pink-400 border-t-transparent rounded-full animate-spin mx-auto"></div></div>}
           
-          {feedQuery.data?.length === 0 && (
+          {posts.length === 0 && !feedQuery.isLoading && (
             <div className="text-center py-20 bg-white rounded-3xl border border-border">
               <Users className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
               <p className="text-muted-foreground font-medium">No posts in this category yet. Be the first!</p>
             </div>
           )}
 
-          {feedQuery.data?.map(post => (
+          {posts.map(post => (
             <div key={post.id} className="bg-white rounded-3xl p-6 shadow-sm border border-border hover:shadow-md transition-shadow">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">

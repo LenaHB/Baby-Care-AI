@@ -28,7 +28,7 @@ app.use(
 );
 app.use(cors());
 
-const FLASK_PORT = process.env["FLASK_PORT"] || "5050";
+const FLASK_PORT = process.env["FLASK_PORT"] || "5000";
 
 const FLASK_PREFIXES = [
   "analyze-cry",
@@ -61,6 +61,7 @@ for (const prefix of FLASK_PREFIXES) {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 
 app.use("/api", router);
 

@@ -10,11 +10,7 @@ export default function Emergency() {
   
   const geo = useGeolocation();
   const assessMut = useAssessEmergency();
-  
-  const hospitalsQuery = useGetNearbyHospitals(
-    { lat: geo.lat!, lng: geo.lng! },
-    { query: { enabled: !!geo.lat && !!geo.lng } }
-  );
+
 
   const toggleSymptom = (s: string) => {
     setSymptoms(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
@@ -137,29 +133,6 @@ export default function Emergency() {
               </div>
             )}
           </motion.div>
-        )}
-
-        {hospitalsQuery.data && hospitalsQuery.data.length > 0 && (
-          <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl border border-border">
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <MapPin className="text-red-500" />
-              Nearby Hospitals
-            </h2>
-            <div className="grid gap-4">
-              {hospitalsQuery.data.map((h, i) => (
-                <div key={i} className="flex items-center justify-between p-4 border rounded-2xl hover:border-red-200 transition-colors">
-                  <div>
-                    <h4 className="font-bold text-lg">{h.name}</h4>
-                    <p className="text-muted-foreground text-sm">{h.address}</p>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-bold text-red-600 text-lg">{h.distance_km.toFixed(1)} km</div>
-                    {h.phone && <a href={`tel:${h.phone}`} className="text-sm text-primary hover:underline">{h.phone}</a>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
         )}
       </div>
     </div>

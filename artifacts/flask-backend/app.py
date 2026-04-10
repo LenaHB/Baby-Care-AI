@@ -1,28 +1,45 @@
 import os
-import json
 import sqlite3
 import tempfile
-import struct
 import wave
 import io
 import math
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
 
+import joblib
+import numpy as np
+from pydub import AudioSegment
+
+
+# =========================
+# BabyCare AI Assistant API
+# Flask backend for:
+# - Cry analysis
+# - Photo analysis
+# - Symptom diagnosis
+# - Growth tracking
+# - Reminders
+# - Emergency assistant
+# - Community posts
+# =========================
 app = Flask(__name__)
 CORS(app, origins="*")
 
+#sqlite database path
 DB_PATH = os.path.join(os.path.dirname(__file__), "babycare.db")
 
 
 def get_db():
+    
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
+    #Create database tables if they do not already exist.
     conn = get_db()
     cursor = conn.cursor()
     cursor.executescript("""
@@ -96,7 +113,326 @@ FLAGGED_KEYWORDS = [
 def health():
     return jsonify({"status": "ok"})
 
+# =========================
+# Cry Model Configuration
+# =========================
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "baby-cry-classification")
+CRY_MODEL = None
+CRY_LABEL_ENCODER = None
+CRY_MODEL_ERROR = None
 
+# Feature extraction parameters
+N_FFT = 2048
+HOP_LENGTH = 512
+WIN_LENGTH = 2048
+WINDOW = "hann"
+N_MELS = 128
+N_BANDS = 6
+FMIN = 200.0
+
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".wav", ".mp3", ".m4a", ".webm", ".ogg", ".flac", ".aac"
+}
+# =========================
+# Severity Model Configuration
+# =========================
+SEVERITY_MODEL = None
+SEVERITY_MODEL_ERROR = None
+SEVERITY_MODEL_PATH = os.path.join(os.path.dirname(__file__),'baby_severity', "severity_model.joblib")
+
+# =========================
+# Load Models
+# =========================
+def load_cry_model():
+    #"""Load cry classification model and label encoder from disk."""
+    global CRY_MODEL, CRY_LABEL_ENCODER, CRY_MODEL_ERROR
+
+    if CRY_MODEL is not None and CRY_LABEL_ENCODER is not None:
+        return True
+
+    try:
+        model_path = os.path.join(MODEL_DIR, "model.joblib")
+        label_path = os.path.join(MODEL_DIR, "label.joblib")
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Missing model file: {model_path}")
+        if not os.path.exists(label_path):
+            raise FileNotFoundError(f"Missing label file: {label_path}")
+
+        CRY_MODEL = joblib.load(model_path)
+        CRY_LABEL_ENCODER = joblib.load(label_path)
+        CRY_MODEL_ERROR = None
+
+        print("✅ Cry model loaded successfully from local files")
+        return True
+
+    except Exception as e:
+        CRY_MODEL = None
+        CRY_LABEL_ENCODER = None
+        CRY_MODEL_ERROR = str(e)
+        print(f"❌ Failed to load cry model: {e}")
+        return False
+    
+def load_severity_model():
+    
+    
+    global SEVERITY_MODEL, SEVERITY_MODEL_ERROR
+
+    if SEVERITY_MODEL is not None:
+        return True
+
+    try:
+        if not os.path.exists(SEVERITY_MODEL_PATH):
+            raise FileNotFoundError(f"Missing severity model file: {SEVERITY_MODEL_PATH}")
+
+        bundle = joblib.load(SEVERITY_MODEL_PATH)
+        SEVERITY_MODEL = bundle
+        SEVERITY_MODEL_ERROR = None
+        print("✅ Severity model loaded successfully")
+        return True
+
+    except Exception as e:
+        SEVERITY_MODEL = None
+        SEVERITY_MODEL_ERROR = str(e)
+        print(f"❌ Failed to load severity model: {e}")
+        return False
+# =========================
+# Cry Model Utilities
+# =========================
+def _get_file_extension(filename):
+    if not filename:
+        return ""
+    return os.path.splitext(filename.lower())[1]
+
+def convert_audio_to_wav_16k_mono(audio_bytes, original_filename="audio.wav"):
+    """
+    Converts uploaded audio bytes to a clean mono 16kHz WAV file.
+    Returns path to temp wav file.
+    """
+    ext = _get_file_extension(original_filename)
+    if ext not in SUPPORTED_AUDIO_EXTENSIONS:
+        # still try, but give pydub a chance using original extension or wav fallback
+        ext = ".wav"
+
+    input_suffix = ext if ext else ".bin"
+
+    with tempfile.NamedTemporaryFile(suffix=input_suffix, delete=False) as src_file:
+        src_file.write(audio_bytes)
+        src_path = src_file.name
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
+        out_path = out_file.name
+
+    try:
+        audio = AudioSegment.from_file(src_path)
+        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio.export(out_path, format="wav")
+        return out_path
+    except Exception as e:
+        # fallback for true wav files
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                if wf.getnframes() < 100:
+                    raise ValueError("Audio too short")
+            return src_path
+        except Exception:
+            if os.path.exists(src_path):
+                os.unlink(src_path)
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+            raise ValueError(f"Audio conversion failed: {str(e)}")
+    finally:
+        if os.path.exists(src_path) and src_path != out_path:
+            try:
+                os.unlink(src_path)
+            except Exception:
+                pass
+
+def extract_cry_features(file_path):
+    import librosa
+
+    y, sr = librosa.load(file_path, sr=16000, mono=True)
+
+    if y is None or len(y) < 400:
+        raise ValueError("Audio too short or unreadable")
+
+    max_val = np.max(np.abs(y))
+    if max_val > 0:
+        y = y / max_val
+
+    mfcc = np.mean(
+        librosa.feature.mfcc(
+            y=y,
+            sr=sr,
+            n_mfcc=40,
+            n_fft=N_FFT,
+            hop_length=HOP_LENGTH,
+            win_length=WIN_LENGTH,
+            window=WINDOW
+        ).T,
+        axis=0
+    )
+
+    mel = np.mean(
+        librosa.feature.melspectrogram(
+            y=y,
+            sr=sr,
+            n_fft=N_FFT,
+            hop_length=HOP_LENGTH,
+            win_length=WIN_LENGTH,
+            window=WINDOW,
+            n_mels=N_MELS
+        ).T,
+        axis=0
+    )
+
+    stft = np.abs(
+        librosa.stft(
+            y,
+            n_fft=N_FFT,
+            hop_length=HOP_LENGTH,
+            win_length=WIN_LENGTH,
+            window=WINDOW
+        )
+    )
+
+    chroma = np.mean(
+        librosa.feature.chroma_stft(
+            S=stft,
+            sr=sr
+        ).T,
+        axis=0
+    )
+
+    contrast = np.mean(
+        librosa.feature.spectral_contrast(
+            S=stft,
+            sr=sr,
+            n_fft=N_FFT,
+            hop_length=HOP_LENGTH,
+            win_length=WIN_LENGTH,
+            n_bands=N_BANDS,
+            fmin=FMIN
+        ).T,
+        axis=0
+    )
+
+    tonnetz = np.mean(
+        librosa.feature.tonnetz(
+            y=y,
+            sr=sr
+        ).T,
+        axis=0
+    )
+
+    features = np.concatenate([mfcc, chroma, mel, contrast, tonnetz]).astype(np.float32)
+    return features
+
+
+def predict_cry_with_model(file_path):
+    if CRY_MODEL is None or CRY_LABEL_ENCODER is None:
+        raise RuntimeError("Cry model is not loaded")
+
+    features = extract_cry_features(file_path).reshape(1, -1)
+
+    prediction = CRY_MODEL.predict(features)
+    predicted_label = CRY_LABEL_ENCODER.inverse_transform(prediction)[0]
+
+    confidence = None
+    class_probabilities = {}
+
+    if hasattr(CRY_MODEL, "predict_proba"):
+        probs = CRY_MODEL.predict_proba(features)[0]
+        confidence = float(np.max(probs))
+
+        try:
+            class_names = CRY_LABEL_ENCODER.inverse_transform(np.arange(len(probs)))
+            class_probabilities = {
+                str(class_names[i]): round(float(probs[i]), 4)
+                for i in range(len(probs))
+            }
+        except Exception:
+            pass
+
+    return predicted_label, confidence, class_probabilities
+
+
+def map_cry_result(label):
+    label_key = str(label).strip().lower().replace(" ", "_").replace("-", "_")
+
+    mappings = {
+        "belly_pain": {
+            "condition": "Possible belly pain / colic",
+            "severity": "moderate",
+            "description": "The trained model suggests the cry may be related to abdominal discomfort or colic.",
+            "recommendations": [
+                "Try burping the baby",
+                "Try gentle tummy massage",
+                "Hold baby upright after feeding",
+                "Check for trapped gas",
+                "See a pediatrician if the crying is persistent or intense"
+            ]
+        },
+        "burping": {
+            "condition": "Needs burping",
+            "severity": "mild",
+            "description": "The trained model suggests the baby may need burping.",
+            "recommendations": [
+                "Hold baby upright",
+                "Gently pat or rub the back",
+                "Pause during feeds for burping"
+            ]
+        },
+        "discomfort": {
+            "condition": "General discomfort",
+            "severity": "mild",
+            "description": "The trained model suggests discomfort rather than a clearly urgent pattern.",
+            "recommendations": [
+                "Check diaper",
+                "Check clothing tightness",
+                "Check room temperature",
+                "Try changing baby position"
+            ]
+        },
+        "hungry": {
+            "condition": "Possible hunger cry",
+            "severity": "mild",
+            "description": "The trained model suggests the cry may be related to hunger.",
+            "recommendations": [
+                "Try feeding",
+                "Check recent feeding time",
+                "Watch for hunger cues such as rooting or sucking motions"
+            ]
+        },
+        "tired": {
+            "condition": "Possible tiredness cry",
+            "severity": "mild",
+            "description": "The trained model suggests the baby may be tired or overstimulated.",
+            "recommendations": [
+                "Reduce noise and light",
+                "Begin sleep routine",
+                "Try rocking or white noise"
+            ]
+        }
+    }
+
+    default_result = {
+        "condition": f"Predicted cry type: {label}",
+        "severity": "mild",
+        "description": "The trained model returned a class that is not mapped to a custom description yet.",
+        "recommendations": [
+            "Check hunger, diaper, temperature, and comfort",
+            "Monitor the baby closely",
+            "Consult a pediatrician if concerned"
+        ]
+    }
+
+    return mappings.get(label_key, default_result)
+
+
+# =========================-
+# Cry API Endpoint
+# =========================
 @app.route("/api/analyze-cry", methods=["POST"])
 def analyze_cry():
     if "audio" not in request.files:
@@ -105,77 +441,68 @@ def analyze_cry():
     audio_file = request.files["audio"]
     audio_data = audio_file.read()
 
+    if not audio_data:
+        return jsonify({"error": "Empty audio file"}), 400
+
+    original_filename = audio_file.filename or "audio.wav"
+    wav_path = None
+
     try:
-        import librosa
-        import numpy as np
-        import soundfile as sf
+        wav_path = convert_audio_to_wav_16k_mono(audio_data, original_filename)
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_data)
-            tmp_path = tmp.name
+        if load_cry_model():
+            predicted_label, confidence, class_probabilities = predict_cry_with_model(wav_path)
+            mapped = map_cry_result(predicted_label)
 
-        try:
-            y, sr = librosa.load(tmp_path, sr=22050, mono=True)
-        except Exception:
-            y, sr = _simple_wav_load(audio_data)
+            return jsonify({
+                "classification": predicted_label,
+                "confidence": confidence,
+                "description": mapped["description"],
+                "recommendations": mapped["recommendations"],
+                "condition": mapped["condition"],
+                "severity": mapped["severity"],
+                "class_probabilities": class_probabilities,
+                "model_used": "huggingface_local_model",
+                "audio_info": {
+                    "original_filename": original_filename,
+                    "converted_to_wav_mono_16k": True
+                },
+                "disclaimer": (
+                    "This AI result is for guidance only and is not a medical diagnosis. "
+                    "Seek urgent medical care for breathing difficulty, seizure, "
+                    "unresponsiveness, or fever in babies under 3 months."
+                )
+            })
 
-        if y is None or len(y) < 100:
-            return jsonify({"error": "Audio too short or unreadable"}), 400
+        fallback_response = _analyze_cry_basic(audio_data)
+        fallback_json = fallback_response.get_json()
+        fallback_json["warning"] = f"Model unavailable: {CRY_MODEL_ERROR}"
+        fallback_json["audio_info"] = {
+            "original_filename": original_filename,
+            "converted_to_wav_mono_16k": True
+        }
+        return jsonify(fallback_json)
 
-        f0, voiced_flag, voiced_probs = librosa.pyin(
-            y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7")
-        )
-        f0_clean = f0[~np.isnan(f0)] if f0 is not None else np.array([])
-        mean_pitch = float(np.mean(f0_clean)) if len(f0_clean) > 0 else 0.0
-
-        spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
-        rms_energy = float(np.mean(librosa.feature.rms(y=y)))
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(y)))
-        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        mfcc_mean = [float(x) for x in np.mean(mfccs, axis=1)]
-
-        pitch_contour = [float(x) if not np.isnan(x) else 0.0 for x in (f0[:100] if f0 is not None else [])]
-
-        import os as _os
-        _os.unlink(tmp_path)
-
-        classification, confidence, description, recommendations = _classify_cry(
-            mean_pitch, spectral_centroid, rms_energy, zcr
-        )
-
-        return jsonify({
-            "classification": classification,
-            "confidence": confidence,
-            "description": description,
-            "recommendations": recommendations,
-            "features": {
-                "mean_pitch": mean_pitch,
-                "spectral_centroid": spectral_centroid,
-                "rms_energy": rms_energy,
-                "zero_crossing_rate": zcr,
-                "mfcc_mean": mfcc_mean
-            },
-            "pitch_contour": pitch_contour
-        })
-
-    except ImportError:
-        return _analyze_cry_basic(audio_data)
     except Exception as e:
-        return jsonify({"error": f"Audio analysis failed: {str(e)}"}), 500
+        try:
+            fallback_response = _analyze_cry_basic(audio_data)
+            fallback_json = fallback_response.get_json()
+            fallback_json["warning"] = f"Trained model inference failed: {str(e)}"
+            fallback_json["audio_info"] = {
+                "original_filename": original_filename,
+                "converted_to_wav_mono_16k": False
+            }
+            return jsonify(fallback_json)
+        except Exception:
+            return jsonify({"error": f"Audio analysis failed: {str(e)}"}), 500
 
+    finally:
+        if wav_path and os.path.exists(wav_path):
+            try:
+                os.unlink(wav_path)
+            except Exception:
+                pass
 
-def _simple_wav_load(audio_data):
-    try:
-        import numpy as np
-        buf = io.BytesIO(audio_data)
-        with wave.open(buf, "rb") as wf:
-            nframes = wf.getnframes()
-            sr = wf.getframerate()
-            raw = wf.readframes(nframes)
-            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return samples, sr
-    except Exception:
-        return None, 22050
 
 
 def _analyze_cry_basic(audio_data):
@@ -212,47 +539,11 @@ def _analyze_cry_basic(audio_data):
     })
 
 
-def _classify_cry(mean_pitch, spectral_centroid, rms_energy, zcr):
-    if mean_pitch > 650 and rms_energy > 0.1:
-        return "pain", 0.82, "Very high pitch + high intensity — possible pain or distress", [
-            "Check for physical discomfort (diaper, clothing, injury)",
-            "Check temperature for fever",
-            "Seek medical attention if cry is unusual or inconsolable"
-        ]
-    elif mean_pitch > 650 and zcr > 0.15:
-        return "colic", 0.78, "High pitch with irregular pattern — typical of colic or gas", [
-            "Try bicycle legs exercise to relieve gas",
-            "Hold baby upright after feeding",
-            "Try tummy massage in clockwise direction",
-            "Consider anti-colic drops (consult pediatrician)"
-        ]
-    elif 400 <= mean_pitch <= 600 and zcr < 0.1:
-        return "hunger", 0.80, "Medium-high pitch with rhythmic pattern — typical hunger cry", [
-            "Try feeding — check if feeding schedule is due",
-            "If breastfeeding, ensure proper latch",
-            "Try offering pacifier to confirm if hunger"
-        ]
-    elif mean_pitch < 350 and rms_energy < 0.05:
-        return "tired", 0.76, "Low pitch and low energy — baby is likely tired", [
-            "Dim lights and reduce stimulation",
-            "Follow sleep routine (swaddle, rock, white noise)",
-            "Check if last nap was too short"
-        ]
-    elif 350 <= mean_pitch < 500 and rms_energy < 0.08:
-        return "discomfort", 0.70, "Intermittent pattern — baby is uncomfortable", [
-            "Check diaper",
-            "Check clothing for tags or tight spots",
-            "Check room temperature",
-            "Try changing position"
-        ]
-    else:
-        return "unknown", 0.40, "Could not clearly identify cry pattern", [
-            "Check all basics: hunger, diaper, temperature, clothing",
-            "Try soothing techniques",
-            "Consult pediatrician if crying persists more than 3 hours"
-        ]
 
-
+# =========================
+# Photo analysis
+# Uses simple color-based rules for rash, jaundice, and stool checks
+# =========================
 @app.route("/api/analyze-photo", methods=["POST"])
 def analyze_photo():
     if "image" not in request.files:
@@ -417,7 +708,43 @@ def _analyze_image_colors(img_array, analysis_type):
         }
     }
 
+def predict_severity_with_model(age_months, weight_kg, duration_hours, temperature, gender, symptoms):
+    #"""Run the trained severity model and return label + confidence."""
+    import pandas as pd
 
+    if SEVERITY_MODEL is None:
+        raise RuntimeError("Severity model is not loaded")
+
+    features = _build_severity_features(
+        age_months=age_months,
+        weight_kg=weight_kg,
+        duration_hours=duration_hours,
+        temperature=temperature,
+        gender=gender,
+        symptoms=symptoms
+    )
+
+    X = pd.DataFrame([features])
+    model = SEVERITY_MODEL["model"]
+    inv_label_map = SEVERITY_MODEL["inv_label_map"]
+
+    pred_num = int(model.predict(X)[0])
+    pred_label = inv_label_map[pred_num]
+
+    confidence = None
+    class_probabilities = {}
+
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(X)[0]
+        confidence = float(max(probs))
+        for i, p in enumerate(probs):
+            class_probabilities[inv_label_map[i]] = round(float(p), 4)
+
+    return pred_label, confidence, class_probabilities
+# =========================
+# Diagnosis
+# First checks emergency rules, then uses the severity model
+# =========================
 @app.route("/api/diagnose", methods=["POST"])
 def diagnose():
     data = request.get_json()
@@ -429,7 +756,7 @@ def diagnose():
     symptoms = data.get("symptoms", [])
     temperature = data.get("temperature")
     duration_hours = data.get("duration_hours")
-    notes = data.get("notes", "")
+    gender = data.get("gender", "male")
 
     if age_months is None:
         return jsonify({"error": "age_months is required"}), 400
@@ -438,8 +765,43 @@ def diagnose():
     if emergency_result:
         return jsonify(emergency_result)
 
-    result = _rule_based_diagnosis(age_months, symptoms, temperature, duration_hours, weight_kg, notes)
-    return jsonify(result)
+    try:
+        if not load_severity_model():
+            raise RuntimeError(SEVERITY_MODEL_ERROR or "Severity model unavailable")
+
+        pred_label, confidence, class_probabilities = predict_severity_with_model(
+            age_months=age_months,
+            weight_kg=weight_kg,
+            duration_hours=duration_hours,
+            temperature=temperature,
+            gender=gender,
+            symptoms=symptoms
+        )
+
+        mapped = map_severity_result(pred_label)
+
+        return jsonify({
+            "prediction": pred_label,
+            "confidence": confidence,
+            "class_probabilities": class_probabilities,
+            "severity": mapped["severity"],
+            "severity_label": mapped["severity_label"],
+            "advice": mapped["advice"],
+            "home_care": mapped["home_care"],
+            "when_to_see_doctor": mapped["when_to_see_doctor"],
+            "model_used": "curated_severity_xgboost",
+            "disclaimer": (
+                "This result is generated from a curated synthetic training dataset "
+                "based on pediatric symptom-escalation patterns and is not a medical diagnosis. "
+                "Emergency signs still require immediate professional care."
+            )
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error": f"Severity model inference failed: {str(e)}",
+            "model_error": SEVERITY_MODEL_ERROR
+        }), 500
 
 
 def _check_emergency_rules(age_months, symptoms, temperature):
@@ -494,99 +856,75 @@ def _check_emergency_rules(age_months, symptoms, temperature):
 
     return None
 
-
-def _rule_based_diagnosis(age_months, symptoms, temperature, duration_hours, weight_kg, notes):
-    symptom_lower = [s.lower() for s in symptoms]
-
-    score = 0
-    emergency_signs = []
-
-    if temperature:
-        if temperature >= 40.0:
-            score += 4
-            emergency_signs.append("Very high fever (40°C+) — seek urgent care")
-        elif temperature >= 39.0:
-            score += 3
-        elif temperature >= 38.0:
-            score += 2
-
-    severe_symptoms = ["vomiting", "diarrhea", "lethargy", "poor feeding", "unusual color", "rash"]
-    for s in severe_symptoms:
-        if s in symptom_lower:
-            score += 1
-
-    if duration_hours and duration_hours > 48:
-        score += 2
-
-    if score >= 6:
-        severity = "orange"
-        severity_label = "See Doctor Today"
-        advice = "Your baby has multiple concerning symptoms. See a doctor today — do not wait."
-        home_care = [
-            "Keep baby hydrated (breast milk or formula)",
-            "Keep baby comfortable and monitor closely",
-            "Track symptoms — note any changes"
-        ]
-        when_to_see = "See doctor today or go to urgent care"
-    elif score >= 3:
-        severity = "yellow"
-        severity_label = "Monitor and Consider Doctor Visit"
-        advice = "Baby has some concerning symptoms. Monitor closely and consider a doctor visit if symptoms worsen."
-        home_care = _get_home_care(symptom_lower, temperature)
-        when_to_see = "See doctor if symptoms worsen or persist beyond 24-48 hours"
-    else:
-        severity = "green"
-        severity_label = "Home Care Appropriate"
-        advice = "Symptoms appear mild and can be managed at home with careful monitoring."
-        home_care = _get_home_care(symptom_lower, temperature)
-        when_to_see = "See doctor if symptoms persist more than 3 days or if new symptoms develop"
-
-    if "lethargy" in symptom_lower:
-        emergency_signs.append("Extreme lethargy — difficulty waking baby")
-    if "unusual color" in symptom_lower:
-        emergency_signs.append("Blue or gray skin color is an emergency — call 911")
-    if temperature and temperature >= 39.5 and age_months < 6:
-        emergency_signs.append("High fever in young baby — see doctor promptly")
+def _symptom_flags(symptoms):
+    s = {str(x).strip().lower() for x in symptoms}
 
     return {
-        "severity": severity,
-        "severity_label": severity_label,
-        "advice": advice,
-        "home_care": home_care,
-        "when_to_see_doctor": when_to_see,
-        "emergency_signs": emergency_signs,
-        "disclaimer": "DISCLAIMER: This AI assistant provides general guidance only and is NOT a substitute for professional medical advice. Always consult a qualified pediatrician for medical concerns."
+        "symptom_fever": int("fever" in s),
+        "symptom_cough": int("cough" in s),
+        "symptom_vomiting": int("vomiting" in s),
+        "symptom_diarrhea": int("diarrhea" in s),
+        "symptom_rash": int("rash" in s),
+        "symptom_lethargy": int("lethargy" in s),
+        "symptom_poor_feeding": int("poor feeding" in s),
+        "symptom_difficulty_breathing": int("difficulty breathing" in s),
+        "symptom_dehydration": int("dehydration" in s),
     }
 
+def _build_severity_features(age_months, weight_kg, duration_hours, temperature, gender, symptoms):
+    flags = _symptom_flags(symptoms)
+    return {
+        "age_months": float(age_months) if age_months is not None else None,
+        "weight_kg": float(weight_kg) if weight_kg is not None else None,
+        "duration_hours": float(duration_hours) if duration_hours is not None else None,
+        "temperature": float(temperature) if temperature is not None else None,
+        "gender": gender if gender in ["male", "female"] else "male",
+        **flags
+    }
+def map_severity_result(label):
+    if label == "orange":
+        return {
+            "severity": "orange",
+            "severity_label": "Urgent medical review",
+            "advice": "The model suggests a higher-risk symptom pattern.",
+            "home_care": [
+                "Seek urgent medical care",
+                "Keep baby monitored closely",
+                "Prioritize hydration if baby can feed"
+            ],
+            "when_to_see_doctor": "Go to urgent care / ER today"
+        }
+    elif label == "yellow":
+        return {
+            "severity": "yellow",
+            "severity_label": "Doctor review recommended",
+            "advice": "The model suggests a moderate-risk symptom pattern.",
+            "home_care": [
+                "Monitor temperature and feeding",
+                "Watch breathing and wet diapers",
+                "Seek same-day advice if symptoms worsen"
+            ],
+            "when_to_see_doctor": "See doctor today or within 24 hours"
+        }
+    else:
+        return {
+            "severity": "green",
+            "severity_label": "Home monitoring appropriate",
+            "advice": "The model suggests a lower-risk symptom pattern.",
+            "home_care": [
+                "Monitor baby at home",
+                "Ensure feeding and comfort",
+                "Watch for worsening symptoms"
+            ],
+            "when_to_see_doctor": "See doctor if symptoms persist or worsen"
+        }
 
-def _get_home_care(symptom_lower, temperature):
-    tips = []
-    if temperature and temperature >= 37.5:
-        tips.append("Keep baby cool — light clothing, comfortable room temperature")
-        tips.append("Ensure adequate fluids (breast milk, formula)")
-        tips.append("Monitor temperature every 2-4 hours")
-    if "cough" in symptom_lower:
-        tips.append("Keep baby upright to help with breathing")
-        tips.append("Use saline drops for nasal congestion")
-        tips.append("Humidifier in room can help")
-    if "vomiting" in symptom_lower:
-        tips.append("Offer small, frequent feeds")
-        tips.append("Keep baby upright for 20-30 minutes after feeding")
-    if "diarrhea" in symptom_lower:
-        tips.append("Monitor for signs of dehydration (dry mouth, no tears, reduced wet diapers)")
-        tips.append("Continue breastfeeding or formula")
-    if "rash" in symptom_lower:
-        tips.append("Keep skin clean and dry")
-        tips.append("Avoid potential irritants")
-    if not tips:
-        tips = [
-            "Monitor baby closely",
-            "Ensure adequate rest and feeding",
-            "Keep environment comfortable and calm"
-        ]
-    return tips
 
 
+#===================================
+# Groth tracker
+# Saves baby groth records and compares them with WHO standars
+#===================================
 @app.route("/api/growth/add", methods=["POST"])
 def add_growth_record():
     data = request.get_json()
@@ -653,6 +991,7 @@ def get_growth_history():
 
 
 @app.route("/api/growth/percentile", methods=["GET"])
+#=================Return percentile and z-score for a baby's weight and height.================
 def get_growth_percentile():
     try:
         age_months = float(request.args.get("age_months", 0))
@@ -667,12 +1006,7 @@ def get_growth_percentile():
     height_pct = _calculate_percentile(age_months, height_cm, gender, "height") if height_cm else None
     height_z = _calculate_zscore(age_months, height_cm, gender, "height") if height_cm else None
 
-    parts = []
-    if weight_pct is not None:
-        parts.append(f"Weight is at the {weight_pct:.0f}th percentile")
-    if height_pct is not None:
-        parts.append(f"Height is at the {height_pct:.0f}th percentile")
-
+    #================"Normal growth"===============
     interp = "Normal growth" if all(p is not None and 5 <= p <= 95 for p in [weight_pct, height_pct] if p) else "Consult your pediatrician for growth interpretation"
 
     return jsonify({
@@ -823,7 +1157,10 @@ def update_reminder(reminder_id):
     finally:
         conn.close()
 
-
+# =========================
+# Emergency assistant
+# Uses decision rules to classify urgent situations quickly
+# =========================
 @app.route("/api/emergency/assess", methods=["POST"])
 def assess_emergency():
     data = request.get_json()
@@ -951,45 +1288,11 @@ def assess_emergency():
     })
 
 
-@app.route("/api/emergency/hospitals", methods=["GET"])
-def get_nearby_hospitals():
-    try:
-        lat = float(request.args.get("lat", 0))
-        lng = float(request.args.get("lng", 0))
-    except (ValueError, TypeError):
-        return jsonify({"error": "Invalid lat/lng"}), 400
 
-    hospitals = [
-        {
-            "name": "Children's Medical Center",
-            "address": "1935 Medical District Dr, Dallas, TX",
-            "distance_km": round(abs(lat - 32.78) * 111 + abs(lng - (-96.80)) * 88, 1),
-            "phone": "+1-214-456-7000",
-            "lat": 32.78,
-            "lng": -96.80
-        },
-        {
-            "name": "Pediatric Emergency Care",
-            "address": "2222 Hospital Way, Medical City",
-            "distance_km": round(abs(lat - 32.90) * 111 + abs(lng - (-96.95)) * 88, 1),
-            "phone": "+1-555-PEDS-NOW",
-            "lat": 32.90,
-            "lng": -96.95
-        },
-        {
-            "name": "Regional Medical Center",
-            "address": "500 Healthcare Blvd, City Hospital",
-            "distance_km": round(abs(lat - 32.75) * 111 + abs(lng - (-97.00)) * 88, 1),
-            "phone": "+1-555-MED-HELP",
-            "lat": 32.75,
-            "lng": -97.00
-        }
-    ]
-
-    hospitals.sort(key=lambda h: h["distance_km"])
-    return jsonify(hospitals)
-
-
+# =========================
+# Community features
+# Posts, likes, comments, and simple content moderation
+# =========================
 @app.route("/api/community/post", methods=["POST"])
 def create_post():
     data = request.get_json()
@@ -1132,7 +1435,7 @@ def _seed_sample_data():
 
 
 _seed_sample_data()
-
+load_cry_model()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

@@ -122,7 +122,7 @@ export default function PhotoAnalysis() {
                 `}>
                   {analyzeMut.data.severity}
                 </span>
-              </div>
+0              </div>
 
               <div className="mb-6 p-4 bg-muted/50 rounded-2xl">
                 <span className="text-sm font-bold text-muted-foreground uppercase tracking-wider block mb-1">Detected Condition</span>
